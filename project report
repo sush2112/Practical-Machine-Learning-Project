@@ -1,163 +1,319 @@
---
-title: "Practical Machine Learning Course Project"
-author: "Marta Vicente"
-date: "7 de febrero de 2018"
-output: html_document
+---
+title: "Predictions using the Weight Lifting Exercises Dataset"
+author: "sush"
+date: "23 feb 2018"
+output: 
+  html_document:
+    keep_md: yes
+  md_document:
+    variant: markdown_github
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, fig.width=10, fig.height=5)
+options(width=120)
+
+library(lattice)
+library(ggplot2)
+library(plyr)
+library(randomForest)
 ```
 
-## These is a project submitted during a homework assignment of Coursera’s MOOC Practical Machine Learning from Johns Hopkins Bloomberg School of Public Health.
+## Executive Summary
 
-#Data
-The training data for this project are available here:
+Based on a dataset provide by HAR [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) we will try to train a predictive model to predict what exercise was performed using a dataset with 159 features
 
-[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv]
 
-The test data are available here:
 
-[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv]
+We'll take the following steps:
 
-The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har].
+- Process the data, for use of this project
+- Explore the data, especially focussing on the two paramaters we are interested in 
+- Model selection, where we try different models to help us answer our questions
+- Model examination, to see wether our best model holds up to our standards
+- A Conclusion where we answer the questions based on the data
+- Predicting the classification of the model on test set
 
-#Replicating Results of this Experiment
+## Processing
 
-Please install packages listed below and use the same seed, To install, for instance, the caret package in R, run this command:  install.packages("caret").
-To avoid reinstall, run the following command:  if("caret" %in% rownames(installed.packages()) == FALSE) {install.packages("caret")} ;
-
-The following Libraries were used in this project, and should be loaded in working environment.
-
+First change 'am' to  factor (0 = automatic, 1 = manual)
+And make cylinders a factor as well (since it is not continious)
 
 ```{r}
-require(rattle)
-require(caret)
-require(rpart)
-require(rpart.plot)
-require(corrplot)
-require(randomForest)
-require(RColorBrewer)
+training.raw <- read.csv("pml-training.csv")
+testing.raw <- read.csv("pml-testing.csv")
 ```
 
-#Set Seed
-Load the same seed with the following line of code:
+## Exploratory data analyses 
+
+Look at the dimensions & head of the dataset to get an idea
+```{r}
+# Res 1
+dim(training.raw)
+
+# Res 2 - excluded because excessivness
+# head(training.raw)
+
+# Res 3 - excluded because excessivness
+#str(training.raw)
+
+# Res 4 - excluded because excessivness
+#summary(training.raw)
+```
+
+
+What we see is a lot of data with NA / empty values. Let's remove those
 
 ```{r}
-set.seed(12345)
+maxNAPerc = 20
+maxNACount <- nrow(training.raw) / 100 * maxNAPerc
+removeColumns <- which(colSums(is.na(training.raw) | training.raw=="") > maxNACount)
+training.cleaned01 <- training.raw[,-removeColumns]
+testing.cleaned01 <- testing.raw[,-removeColumns]
 ```
 
-#Load Data
-
-Read the datafiles from URL provided in project statement and load the dataframes for training and testing datasets.
+Also remove all time related data, since we won't use those
 
 ```{r}
-trainLocation <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
-testLocation <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
-trainingData <- read.csv(url(trainLocation), na.strings=c("NA","#DIV/0!",""))
-testingData <- read.csv(url(testLocation), na.strings=c("NA","#DIV/0!",""))
+removeColumns <- grep("timestamp", names(training.cleaned01))
+training.cleaned02 <- training.cleaned01[,-c(1, removeColumns )]
+testing.cleaned02 <- testing.cleaned01[,-c(1, removeColumns )]
 ```
-#Data Cleaning Steps
 
-Clean the dataset and get rid of observations with missing values as well as redundant variables.
+Then convert all factors to integers
+```{r}
+classeLevels <- levels(training.cleaned02$classe)
+training.cleaned03 <- data.frame(data.matrix(training.cleaned02))
+training.cleaned03$classe <- factor(training.cleaned03$classe, labels=classeLevels)
+testing.cleaned03 <- data.frame(data.matrix(testing.cleaned02))
+```
+
+Finally set the dataset to be explored
 
 ```{r}
-NZV <- nearZeroVar(trainingData, saveMetrics = TRUE)
-head(NZV, 20)
+training.cleaned <- training.cleaned03
+testing.cleaned <- testing.cleaned03
 ```
+
+
+## Exploratory data analyses 
+
+Since the test set provided is the the ultimate validation set, we will split the current training in a test and train set to work with.
 
 ```{r}
-trainingClean <- trainingData[, !NZV$nzv]
-testingClean <- testingData[, !NZV$nzv]
-dim(trainingClean)
-dim(testingClean)
+set.seed(19791108)
+library(caret)
+
+classeIndex <- which(names(training.cleaned) == "classe")
+
+partition <- createDataPartition(y=training.cleaned$classe, p=0.75, list=FALSE)
+training.subSetTrain <- training.cleaned[partition, ]
+training.subSetTest <- training.cleaned[-partition, ]
 ```
+
+What are some fields that have high correlations with the classe?
 
 ```{r}
-unwanted_col <- grepl("^X|timestamp|user_name", names(trainingClean))
-training <- trainingClean[, !unwanted_col]
-testing <- testingClean[, !unwanted_col]
-dim(training)
-dim(testing)
+correlations <- cor(training.subSetTrain[, -classeIndex], as.numeric(training.subSetTrain$classe))
+bestCorrelations <- subset(as.data.frame(as.table(correlations)), abs(Freq)>0.3)
+bestCorrelations
 ```
+
+Even the best correlations with classe are hardly above 0.3
+Let's check visually if there is indeed hard to use these 2 as possible simple linear predictors.
 
 ```{r}
-training <- training[, colSums(is.na(training)) == 0]
-testing <- testing[, colSums(is.na(training)) == 0]
+library(Rmisc)
+library(ggplot2)
+
+p1 <- ggplot(training.subSetTrain, aes(classe,pitch_forearm)) + 
+  geom_boxplot(aes(fill=classe))
+
+p2 <- ggplot(training.subSetTrain, aes(classe, magnet_arm_x)) + 
+  geom_boxplot(aes(fill=classe))
+
+multiplot(p1,p2,cols=2)
 ```
 
-#Data Partitioning
-Split the training set into a training data set (70%) and a validation data set (30%). Validation data set is used to conduct cross validation.
+Clearly there is no hard seperation of classes possible using only these 'highly' correlated features.
+Let's train some models to get closer to a way of predicting these classe's
+
+## Model selection 
+
+Let's identify variables with high correlations amongst each other in our set, so we can possibly exclude them from the pca or training. 
+
+We will check afterwards if these modifications to the dataset make the model more accurate (and perhaps even faster)
 
 ```{r}
-set.seed(12345) 
-inTrain <- createDataPartition(training$classe, p = 0.70, list = FALSE)
-validation <- training[-inTrain, ]
-training <- training[inTrain, ]
+library(corrplot)
+correlationMatrix <- cor(training.subSetTrain[, -classeIndex])
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.9, exact=TRUE)
+excludeColumns <- c(highlyCorrelated, classeIndex)
+corrplot(correlationMatrix, method="color", type="lower", order="hclust", tl.cex=0.70, tl.col="black", tl.srt = 45, diag = FALSE)
 ```
 
-#Data Modelling
-Decision Tree Algorithm
-Use Decision Tree algorithm for predictive modeling.
+We see that there are some features that aree quite correlated with each other.
+We will have a model with these excluded. Also we'll try and reduce the features by running PCA on all and the excluded subset of the features
 
 ```{r}
-modelTree <- rpart(classe ~ ., data = training, method = "class")
-prp(modelTree)
-```
-```{r}
-predictTree <- predict(modelTree, validation, type = "class")
-confusionMatrix(validation$classe, predictTree)
-```
-```{r}
-accuracy <- postResample(predictTree, validation$classe)
-ose <- 1 - as.numeric(confusionMatrix(validation$classe, predictTree)$overall[1])
+pcaPreProcess.all <- preProcess(training.subSetTrain[, -classeIndex], method = "pca", thresh = 0.99)
+training.subSetTrain.pca.all <- predict(pcaPreProcess.all, training.subSetTrain[, -classeIndex])
+training.subSetTest.pca.all <- predict(pcaPreProcess.all, training.subSetTest[, -classeIndex])
+testing.pca.all <- predict(pcaPreProcess.all, testing.cleaned[, -classeIndex])
+
+
+pcaPreProcess.subset <- preProcess(training.subSetTrain[, -excludeColumns], method = "pca", thresh = 0.99)
+training.subSetTrain.pca.subset <- predict(pcaPreProcess.subset, training.subSetTrain[, -excludeColumns])
+training.subSetTest.pca.subset <- predict(pcaPreProcess.subset, training.subSetTest[, -excludeColumns])
+testing.pca.subset <- predict(pcaPreProcess.subset, testing.cleaned[, -classeIndex])
 ```
 
-The Estimated Accuracy of the Decision Tree Algorithm is 73.6788445% and the Estimated Out-of-Sample Error is 26.3211555%.
-
-#Random Forest
-Use Random Forest for a predictive model since it automatically selects key variables and is robust to correlated covariates & outliers in general.
-
-```{r}
-modelRF <- randomForest(classe ~. , data=training)
-modelRF
-```
+Now we'll do some actual Random Forest training.
+We'll use 200 trees, because I've already seen that the error rate doesn't decline a lot after say 50 trees, but we still want to be thorough.
+Also we will time each of the 4 random forest models to see if when all else is equal one pops out as the faster one.
 
 ```{r}
-predictRF <- predict(modelRF, validation)
-confusionMatrix(validation$classe, predictRF)
+library(randomForest)
+
+ntree <- 200 #This is enough for great accuracy (trust me, I'm an engineer). 
+
+start <- proc.time()
+rfMod.cleaned <- randomForest(
+  x=training.subSetTrain[, -classeIndex], 
+  y=training.subSetTrain$classe,
+  xtest=training.subSetTest[, -classeIndex], 
+  ytest=training.subSetTest$classe, 
+  ntree=ntree,
+  keep.forest=TRUE,
+  proximity=TRUE) #do.trace=TRUE
+proc.time() - start
+
+start <- proc.time()
+rfMod.exclude <- randomForest(
+  x=training.subSetTrain[, -excludeColumns], 
+  y=training.subSetTrain$classe,
+  xtest=training.subSetTest[, -excludeColumns], 
+  ytest=training.subSetTest$classe, 
+  ntree=ntree,
+  keep.forest=TRUE,
+  proximity=TRUE) #do.trace=TRUE
+proc.time() - start
+
+start <- proc.time()
+rfMod.pca.all <- randomForest(
+  x=training.subSetTrain.pca.all, 
+  y=training.subSetTrain$classe,
+  xtest=training.subSetTest.pca.all, 
+  ytest=training.subSetTest$classe, 
+  ntree=ntree,
+  keep.forest=TRUE,
+  proximity=TRUE) #do.trace=TRUE
+proc.time() - start
+
+start <- proc.time()
+rfMod.pca.subset <- randomForest(
+  x=training.subSetTrain.pca.subset, 
+  y=training.subSetTrain$classe,
+  xtest=training.subSetTest.pca.subset, 
+  ytest=training.subSetTest$classe, 
+  ntree=ntree,
+  keep.forest=TRUE,
+  proximity=TRUE) #do.trace=TRUE
+proc.time() - start
 ```
+
+## Model examination
+
+Now that we have 4 trained models, we will check the accuracies of each.
+(There probably is a better way, but this still works good)
+
 ```{r}
-accuracy <- postResample(predictRF, validation$classe)
-ose <- 1 - as.numeric(confusionMatrix(validation$classe, predictRF)$overall[1])
-predict(modelRF, testing[, -length(names(testing))])
+rfMod.cleaned
+rfMod.cleaned.training.acc <- round(1-sum(rfMod.cleaned$confusion[, 'class.error']),3)
+paste0("Accuracy on training: ",rfMod.cleaned.training.acc)
+rfMod.cleaned.testing.acc <- round(1-sum(rfMod.cleaned$test$confusion[, 'class.error']),3)
+paste0("Accuracy on testing: ",rfMod.cleaned.testing.acc)
+
+rfMod.exclude
+rfMod.exclude.training.acc <- round(1-sum(rfMod.exclude$confusion[, 'class.error']),3)
+paste0("Accuracy on training: ",rfMod.exclude.training.acc)
+rfMod.exclude.testing.acc <- round(1-sum(rfMod.exclude$test$confusion[, 'class.error']),3)
+paste0("Accuracy on testing: ",rfMod.exclude.testing.acc)
+
+rfMod.pca.all
+rfMod.pca.all.training.acc <- round(1-sum(rfMod.pca.all$confusion[, 'class.error']),3)
+paste0("Accuracy on training: ",rfMod.pca.all.training.acc)
+rfMod.pca.all.testing.acc <- round(1-sum(rfMod.pca.all$test$confusion[, 'class.error']),3)
+paste0("Accuracy on testing: ",rfMod.pca.all.testing.acc)
+
+rfMod.pca.subset
+rfMod.pca.subset.training.acc <- round(1-sum(rfMod.pca.subset$confusion[, 'class.error']),3)
+paste0("Accuracy on training: ",rfMod.pca.subset.training.acc)
+rfMod.pca.subset.testing.acc <- round(1-sum(rfMod.pca.subset$test$confusion[, 'class.error']),3)
+paste0("Accuracy on testing: ",rfMod.pca.subset.testing.acc)
 ```
 
+## Conclusion
 
-The Estimated Accuracy of the Random Forest Algorithm is 99.4902294% and the Estimated Out-of-Sample Error is 0.5097706%. The Random forest accuracy is much better than decision tree as expected.
+This concludes that nor PCA doesn't have a positive of the accuracy (or the process time for that matter)
+The `rfMod.exclude` perform's slightly better then the 'rfMod.cleaned'
 
-#Predicting Test Data Set Results
-Now, we apply the Random Forest model to the testing data set downloaded from the project locations.
+We'll stick with the `rfMod.exclude` model as the best model to use for predicting the test set.
+Because with an accuracy of 98.7% and an estimated OOB error rate of 0.23% this is the best model.
+
+
+Before doing the final prediction we will examine the chosen model more in depth using some plots
 
 ```{r}
-predict(modelRF, testing[, -length(names(testing))])
+par(mfrow=c(1,2)) 
+varImpPlot(rfMod.exclude, cex=0.7, pch=16, main='Variable Importance Plot: rfMod.exclude')
+plot(rfMod.exclude, , cex=0.7, main='Error vs No. of trees plot')
+par(mfrow=c(1,1)) 
 ```
 
-#Generating Files for Assignment Submission
-Function to generate files with predictions to submit for assignment.
+To really look in depth at the distances between predictions we can use MDSplot and cluster predictiosn and results
 
 ```{r}
-pml_write_files = function(x){
-  n = length(x)
-  for(i in 1:n){
-    filename = paste0("problem_id_",i,".txt")
-    write.table(x[i], file = filename, quote = FALSE, row.names = FALSE, col.names = FALSE)
-  }
-}
+start <- proc.time()
+
+library(RColorBrewer)
+palette <- brewer.pal(length(classeLevels), "Set1")
+rfMod.mds <- MDSplot(rfMod.exclude, as.factor(classeLevels), k=2, pch=20, palette=palette)
+
+library(cluster)
+rfMod.pam <- pam(1 - rfMod.exclude$proximity, k=length(classeLevels), diss=TRUE)
+
+plot(
+  rfMod.mds$points[, 1], 
+  rfMod.mds$points[, 2], 
+  pch=rfMod.pam$clustering+14, 
+  col=alpha(palette[as.numeric(training.subSetTrain$classe)],0.5), 
+  bg=alpha(palette[as.numeric(training.subSetTrain$classe)],0.2), 
+  cex=0.5,
+  xlab="x", ylab="y")
+legend("bottomleft", legend=unique(rfMod.pam$clustering), pch=seq(15,14+length(classeLevels)), title = "PAM cluster")
+  legend("topleft", legend=classeLevels, pch = 16, col=palette, title = "Classification")
+
+proc.time() - start
 ```
 
-Generating the Files.
+
+# Test results
+
+Although we've chosen the `rfMod.exclude` it's still nice to see what the other 3 models would predict on the final test set.
+Let's look at predictions for all models on the final test set. 
 
 ```{r}
-pml_write_files(predict(modelRF, testing[, -length(names(testing))]))
+predictions <- t(cbind(
+    exclude=as.data.frame(predict(rfMod.exclude, testing.cleaned[, -excludeColumns]), optional=TRUE),
+    cleaned=as.data.frame(predict(rfMod.cleaned, testing.cleaned), optional=TRUE),
+    pcaAll=as.data.frame(predict(rfMod.pca.all, testing.pca.all), optional=TRUE),
+    pcaExclude=as.data.frame(predict(rfMod.pca.subset, testing.pca.subset), optional=TRUE)
+))
+predictions
 ```
+
+The predictions don't really change a lot with each model, but since we have most faith in the `rfMod.exclude`, we'll keep that as final answer. 
+
+
