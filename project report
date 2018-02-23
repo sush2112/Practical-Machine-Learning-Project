@@ -1,102 +1,163 @@
----
-title: "Practical Machine Learning  Write up"
+--
+title: "Practical Machine Learning Course Project"
+author: "Marta Vicente"
+date: "7 de febrero de 2018"
 output: html_document
 ---
 
-# Getting Data
-
-Training data was obtained from https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
-
-Testing data was obtained from https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
-
-Libraries included for analysis
-```{r,results='hide'}
-library(ggplot2)
-library(caret)
-library(randomForest)
-library(gbm)
-library(doParallel)
-library(dplyr)
-library(e1071)
-trainset <- read.csv("pml-training.csv", head=TRUE, sep=",", na.strings=c("NA","#DIV/0!","")) 
-testset <- read.csv("pml-testing.csv", head=TRUE, sep=",", na.strings=c("NA","#DIV/0!",""))  
-
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# Data Cleanup
+## These is a project submitted during a homework assignment of Coursera’s MOOC Practical Machine Learning from Johns Hopkins Bloomberg School of Public Health.
 
-Data obtained in the testing and traning set need to be cleaned up, columns contaning a majority of NA values need to be removed, columns with low variance also need to be removed. In the end we should be left with only those coulums wich influence the prediction.
+#Data
+The training data for this project are available here:
+
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv]
+
+The test data are available here:
+
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv]
+
+The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har].
+
+#Replicating Results of this Experiment
+
+Please install packages listed below and use the same seed, To install, for instance, the caret package in R, run this command:  install.packages("caret").
+To avoid reinstall, run the following command:  if("caret" %in% rownames(installed.packages()) == FALSE) {install.packages("caret")} ;
+
+The following Libraries were used in this project, and should be loaded in working environment.
+
 
 ```{r}
-
-threshold <- sapply(trainset, function(df) {sum(is.na(df)==TRUE)/length(df)})
-thresholdtest <- sapply(testset, function(df) {sum(is.na(df)==TRUE)/length(df)})
-
-traincolidx <-names(which(threshold<0.95))
-trainset<-trainset[,traincolidx]
-testcolidx  <-names(which(thresholdtest<0.95))
-testset<-testset[,testcolidx]
-
-nov1 <- nearZeroVar(trainset,saveMetrics=TRUE)
-nov2 <- nearZeroVar(testset,saveMetrics=TRUE)
-goodTrainData <- trainset[,which(nov1$nzv==FALSE)]
-goodTestData <- testset[,which(nov2$nzv==FALSE)]
-
-RmInx1 <- grepl("X|timestamp|user_name", names(goodTrainData))
-goodTrainData <- goodTrainData[, which(RmInx1 ==FALSE)]
-
-RmInx2 <- grepl("X|timestamp|user_name|problem_id", names(goodTestData))
-goodTestData <- goodTestData[, which(RmInx2 ==FALSE)]
-
-
-set.seed(35161)
-indexTrain <- createDataPartition (goodTrainData$classe, p=0.75, list=FALSE)
-testing <-goodTrainData [- indexTrain,]
-inTrain <- createDataPartition(testing$classe, p = 0.75)[[1]]
-crossv_test <- testing[ -inTrain,]
-training <- goodTrainData [indexTrain ,]
-testing<-testing[inTrain,]
-
+require(rattle)
+require(caret)
+require(rpart)
+require(rpart.plot)
+require(corrplot)
+require(randomForest)
+require(RColorBrewer)
 ```
 
-# Training Random Forest 
-
-We use parallel processing to increase the training speed
-```{r}
- cl <- makeCluster(detectCores())
- registerDoParallel(cl)
- mod1 <- train(classe ~ ., data=training, method="rf")
- pred1 <- predict(mod1, testing)
- stopCluster(cl)
- plot(mod1$finalModel)
-```
-
-## Displaying the confusion matrix
+#Set Seed
+Load the same seed with the following line of code:
 
 ```{r}
- confusionMatrix(pred1, testing$classe)
+set.seed(12345)
 ```
 
-The confusion matrix gives and accuracy of 99.69%
- 
-## Importance of predictors
- 
- ```{r}
- print(plot(varImp(mod1)))
- ```
-## Out of sample error 
- ```{r}
-pred1 <- predict(mod1,crossv_test)
-accuracy <- sum(pred1 == crossv_test$classe) / length(pred1)
-accuracy
- ```
-The out of sample Error achieved is  99.67 % with the validation set.
- 
-## Prediction of new values
- 
-The final step is to use the model and predict values from our test case
- ```{r}
- final<- predict(mod1,goodTestData)
- final
- ```
+#Load Data
 
+Read the datafiles from URL provided in project statement and load the dataframes for training and testing datasets.
+
+```{r}
+trainLocation <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testLocation <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+trainingData <- read.csv(url(trainLocation), na.strings=c("NA","#DIV/0!",""))
+testingData <- read.csv(url(testLocation), na.strings=c("NA","#DIV/0!",""))
+```
+#Data Cleaning Steps
+
+Clean the dataset and get rid of observations with missing values as well as redundant variables.
+
+```{r}
+NZV <- nearZeroVar(trainingData, saveMetrics = TRUE)
+head(NZV, 20)
+```
+
+```{r}
+trainingClean <- trainingData[, !NZV$nzv]
+testingClean <- testingData[, !NZV$nzv]
+dim(trainingClean)
+dim(testingClean)
+```
+
+```{r}
+unwanted_col <- grepl("^X|timestamp|user_name", names(trainingClean))
+training <- trainingClean[, !unwanted_col]
+testing <- testingClean[, !unwanted_col]
+dim(training)
+dim(testing)
+```
+
+```{r}
+training <- training[, colSums(is.na(training)) == 0]
+testing <- testing[, colSums(is.na(training)) == 0]
+```
+
+#Data Partitioning
+Split the training set into a training data set (70%) and a validation data set (30%). Validation data set is used to conduct cross validation.
+
+```{r}
+set.seed(12345) 
+inTrain <- createDataPartition(training$classe, p = 0.70, list = FALSE)
+validation <- training[-inTrain, ]
+training <- training[inTrain, ]
+```
+
+#Data Modelling
+Decision Tree Algorithm
+Use Decision Tree algorithm for predictive modeling.
+
+```{r}
+modelTree <- rpart(classe ~ ., data = training, method = "class")
+prp(modelTree)
+```
+```{r}
+predictTree <- predict(modelTree, validation, type = "class")
+confusionMatrix(validation$classe, predictTree)
+```
+```{r}
+accuracy <- postResample(predictTree, validation$classe)
+ose <- 1 - as.numeric(confusionMatrix(validation$classe, predictTree)$overall[1])
+```
+
+The Estimated Accuracy of the Decision Tree Algorithm is 73.6788445% and the Estimated Out-of-Sample Error is 26.3211555%.
+
+#Random Forest
+Use Random Forest for a predictive model since it automatically selects key variables and is robust to correlated covariates & outliers in general.
+
+```{r}
+modelRF <- randomForest(classe ~. , data=training)
+modelRF
+```
+
+```{r}
+predictRF <- predict(modelRF, validation)
+confusionMatrix(validation$classe, predictRF)
+```
+```{r}
+accuracy <- postResample(predictRF, validation$classe)
+ose <- 1 - as.numeric(confusionMatrix(validation$classe, predictRF)$overall[1])
+predict(modelRF, testing[, -length(names(testing))])
+```
+
+
+The Estimated Accuracy of the Random Forest Algorithm is 99.4902294% and the Estimated Out-of-Sample Error is 0.5097706%. The Random forest accuracy is much better than decision tree as expected.
+
+#Predicting Test Data Set Results
+Now, we apply the Random Forest model to the testing data set downloaded from the project locations.
+
+```{r}
+predict(modelRF, testing[, -length(names(testing))])
+```
+
+#Generating Files for Assignment Submission
+Function to generate files with predictions to submit for assignment.
+
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i], file = filename, quote = FALSE, row.names = FALSE, col.names = FALSE)
+  }
+}
+```
+
+Generating the Files.
+
+```{r}
+pml_write_files(predict(modelRF, testing[, -length(names(testing))]))
+```
